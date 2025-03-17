@@ -9,7 +9,6 @@
   "author": "",
   "license": "GPL-3.0",
   "dependencies": {
-    "tkinter": "^0.1.0",
     "requests": "^2.25.1",
     "pystray": "^0.17.3",
     "Pillow": "^8.2.0",
