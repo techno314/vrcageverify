@@ -24,7 +24,7 @@ VrcAgeVerify is a Python application that monitors VRChat group join requests an
 
 ### Install dependencies:
 ```bash
-pip install requests pystray pillow
+pip install requests pystray pillow cryptography
 ```
 
 ### Run the application:
