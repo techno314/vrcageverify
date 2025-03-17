@@ -9,7 +9,8 @@ import os
 import sys
 import pystray
 from PIL import Image
-import datetime  # For timestamps
+import datetime
+from cryptography.fernet import Fernet
 
 # Constants for the API and defaults.
 API_BASE_URL = "https://api.vrchat.cloud/api/1"
@@ -17,19 +18,40 @@ DEFAULT_GROUP_ID = "grp_7aa61881-550f-431e-a180-f99c77436124"
 DEFAULT_POLL_INTERVAL = 60
 USER_AGENT = "VRChatAutoJoinScript/1.0, contact: snoogle35@gmail.com"
 
+# File names for encrypted data.
+CREDENTIALS_FILE = "saved_credentials.enc"
+SESSION_COOKIE_FILE = "vrchat_session.enc"
+KEY_FILE = "secret.key"
+
+def load_key():
+    """Load the encryption key from KEY_FILE or generate one if not found."""
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "rb") as f:
+            return f.read()
+    else:
+        key = Fernet.generate_key()
+        with open(KEY_FILE, "wb") as f:
+            f.write(key)
+        return key
+
+# Load the encryption key (used for both credentials and session cookies).
+ENCRYPTION_KEY = load_key()
+CIPHER = Fernet(ENCRYPTION_KEY)
+
 class VRChatMonitorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("VRChat Auto Join Monitor")
-        self.credentials_file = "saved_credentials.json"
-        self.session_cookie_file = "vrchat_session.json"
+        # Use encrypted file names.
+        self.credentials_file = CREDENTIALS_FILE
+        self.session_cookie_file = SESSION_COOKIE_FILE
         self.accepted_log_file = "accepted_log.txt"
         self.stop_event = threading.Event()
         self.monitor_thread = None
-        self.tray_icon = None  # Will hold our pystray icon
+        self.tray_icon = None  # For pystray
         self.create_widgets()
         self.load_saved_credentials()
-        # Set window icon. When bundled, adjust using __file__ and sys._MEIPASS.
+        # Set window icon (using absolute path when bundled)
         icon_path = self.get_resource_path("vrchat_monitor_icon.ico")
         try:
             self.root.iconbitmap(icon_path)
@@ -82,13 +104,12 @@ class VRChatMonitorApp:
         self.text_log.grid(row=1, column=0, padx=10, pady=10)
 
     def log(self, message):
-        # Thread-safe logging to the text widget.
         self.root.after(0, lambda: self.text_log.insert(tk.END, message + "\n"))
         self.root.after(0, lambda: self.text_log.see(tk.END))
         print(message)
 
     def log_to_file(self, message):
-        """Append a log entry to the accepted log file with a timestamp."""
+        """Append a log entry with timestamp to the accepted log file."""
         try:
             with open(self.accepted_log_file, "a") as f:
                 f.write(message + "\n")
@@ -98,39 +119,47 @@ class VRChatMonitorApp:
     def load_saved_credentials(self):
         if os.path.exists(self.credentials_file):
             try:
-                with open(self.credentials_file, "r") as f:
-                    creds = json.load(f)
+                with open(self.credentials_file, "rb") as f:
+                    encrypted_data = f.read()
+                decrypted_data = CIPHER.decrypt(encrypted_data)
+                creds = json.loads(decrypted_data.decode("utf-8"))
                 self.username_entry.insert(0, creds.get("username", ""))
                 self.password_entry.insert(0, creds.get("password", ""))
-                self.log("Loaded saved credentials.")
+                self.log("Loaded saved credentials (encrypted).")
             except Exception as e:
                 self.log(f"Failed to load saved credentials: {e}")
 
     def save_credentials(self):
         creds = {"username": self.username_entry.get(), "password": self.password_entry.get()}
         try:
-            with open(self.credentials_file, "w") as f:
-                json.dump(creds, f)
-            self.log("Credentials saved.")
+            data = json.dumps(creds).encode("utf-8")
+            encrypted_data = CIPHER.encrypt(data)
+            with open(self.credentials_file, "wb") as f:
+                f.write(encrypted_data)
+            self.log("Credentials saved (encrypted).")
         except Exception as e:
             self.log(f"Failed to save credentials: {e}")
 
     def load_session_cookies(self, session):
         if os.path.exists(self.session_cookie_file):
             try:
-                with open(self.session_cookie_file, "r") as f:
-                    cookies_dict = json.load(f)
+                with open(self.session_cookie_file, "rb") as f:
+                    encrypted_data = f.read()
+                decrypted_data = CIPHER.decrypt(encrypted_data)
+                cookies_dict = json.loads(decrypted_data.decode("utf-8"))
                 session.cookies.update(cookies_dict)
-                self.log("Session cookies loaded.")
+                self.log("Session cookies loaded (encrypted).")
             except Exception as e:
                 self.log(f"Failed to load session cookies: {e}")
 
     def save_session_cookies(self, session):
         cookies_dict = session.cookies.get_dict()
         try:
-            with open(self.session_cookie_file, "w") as f:
-                json.dump(cookies_dict, f)
-            self.log("Session cookies saved.")
+            data = json.dumps(cookies_dict).encode("utf-8")
+            encrypted_data = CIPHER.encrypt(data)
+            with open(self.session_cookie_file, "wb") as f:
+                f.write(encrypted_data)
+            self.log("Session cookies saved (encrypted).")
         except Exception as e:
             self.log(f"Failed to save session cookies: {e}")
 
@@ -149,14 +178,13 @@ class VRChatMonitorApp:
             return False
 
     def get_2fa_code(self):
-        """Prompt for a 2FA code on the main thread and wait for the response."""
         result = {}
         event = threading.Event()
         def ask():
             result["code"] = simpledialog.askstring("Two-Factor Authentication", "Enter your 2FA code:")
             event.set()
         self.root.after(0, ask)
-        event.wait()  # Block until the dialog is answered.
+        event.wait()
         return result.get("code")
 
     def verify_two_factor_auth(self, session, username, password):
@@ -221,7 +249,6 @@ class VRChatMonitorApp:
             response = session.put(url, json=payload)
             if response.status_code in (200, 204):
                 self.log(f"Successfully accepted join request for user {user_id}.")
-                # Write acceptance event to log file with a timestamp.
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.log_to_file(f"{timestamp}: Accepted join request for user {user_id}.")
             else:
@@ -316,9 +343,7 @@ class VRChatMonitorApp:
 
     def minimize_to_tray(self):
         self.log("Minimizing to system tray...")
-        # Hide the main window
         self.root.withdraw()
-        # Create tray icon using the ICO file.
         image_path = self.get_resource_path("vrchat_monitor_icon.ico")
         try:
             image = Image.open(image_path)
@@ -330,7 +355,6 @@ class VRChatMonitorApp:
             pystray.MenuItem("Exit", self.exit_app)
         )
         self.tray_icon = pystray.Icon("VRChatMonitor", image, "VRChat Auto Join Monitor", menu)
-        # Run the tray icon in a separate thread
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def restore_window(self, icon, item):
