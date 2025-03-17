@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 
 # Constants for the API and defaults.
 API_BASE_URL = "https://api.vrchat.cloud/api/1"
-DEFAULT_GROUP_ID = "Change Me to your group ID"
+DEFAULT_GROUP_ID = "grp_7aa61881-550f-431e-a180-f99c77436124"
 DEFAULT_POLL_INTERVAL = 60
 USER_AGENT = "VRChatAutoJoinScript/1.0, contact: snoogle35@gmail.com"
 
@@ -34,7 +34,7 @@ def load_key():
             f.write(key)
         return key
 
-# Load the encryption key (used for both credentials and session cookies).
+# Load the encryption key and create the cipher.
 ENCRYPTION_KEY = load_key()
 CIPHER = Fernet(ENCRYPTION_KEY)
 
@@ -42,7 +42,6 @@ class VRChatMonitorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("VRChat Auto Join Monitor")
-        # Use encrypted file names.
         self.credentials_file = CREDENTIALS_FILE
         self.session_cookie_file = SESSION_COOKIE_FILE
         self.accepted_log_file = "accepted_log.txt"
@@ -51,7 +50,6 @@ class VRChatMonitorApp:
         self.tray_icon = None  # For pystray
         self.create_widgets()
         self.load_saved_credentials()
-        # Set window icon (using absolute path when bundled)
         icon_path = self.get_resource_path("vrchat_monitor_icon.ico")
         try:
             self.root.iconbitmap(icon_path)
@@ -109,7 +107,6 @@ class VRChatMonitorApp:
         print(message)
 
     def log_to_file(self, message):
-        """Append a log entry with timestamp to the accepted log file."""
         try:
             with open(self.accepted_log_file, "a") as f:
                 f.write(message + "\n")
@@ -125,18 +122,26 @@ class VRChatMonitorApp:
                 creds = json.loads(decrypted_data.decode("utf-8"))
                 self.username_entry.insert(0, creds.get("username", ""))
                 self.password_entry.insert(0, creds.get("password", ""))
+                # Set the group ID if it exists
+                group = creds.get("group", DEFAULT_GROUP_ID)
+                self.group_entry.delete(0, tk.END)
+                self.group_entry.insert(0, group)
                 self.log("Loaded saved credentials (encrypted).")
             except Exception as e:
                 self.log(f"Failed to load saved credentials: {e}")
 
     def save_credentials(self):
-        creds = {"username": self.username_entry.get(), "password": self.password_entry.get()}
+        creds = {
+            "username": self.username_entry.get(),
+            "password": self.password_entry.get(),
+            "group": self.group_entry.get()  # Save group ID as well.
+        }
         try:
             data = json.dumps(creds).encode("utf-8")
             encrypted_data = CIPHER.encrypt(data)
             with open(self.credentials_file, "wb") as f:
                 f.write(encrypted_data)
-            self.log("Credentials saved (encrypted).")
+            self.log("Credentials and group ID saved (encrypted).")
         except Exception as e:
             self.log(f"Failed to save credentials: {e}")
 
