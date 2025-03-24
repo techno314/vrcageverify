@@ -1,4 +1,4 @@
-# vrcageverify
+# VRChat Group Request 18+ verifier
 
 VrcAgeVerify is a Python application that monitors VRChat group join requests and automatically accepts those from users who are 18+ verified. It features a Tkinter GUI with 2FA support and minimizes to the system tray.
 
@@ -24,7 +24,7 @@ VrcAgeVerify is a Python application that monitors VRChat group join requests an
 
 ### Install dependencies:
 ```bash
-pip install requests pystray pillow
+pip install requests pystray pillow cryptography
 ```
 
 ### Run the application:
