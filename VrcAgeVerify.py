@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 
 # Constants for the API and defaults.
 API_BASE_URL = "https://api.vrchat.cloud/api/1"
-DEFAULT_GROUP_ID = "Change Me"
+DEFAULT_GROUP_ID = "grp_7aa61881-550f-431e-a180-f99c77436124"
 DEFAULT_POLL_INTERVAL = 60
 USER_AGENT = "VRChatAutoJoinScript/1.0, contact: snoogle35@gmail.com"
 
@@ -87,7 +87,11 @@ class VRChatMonitorApp:
 
         self.save_credentials_var = tk.BooleanVar()
         self.save_credentials_check = ttk.Checkbutton(frame, text="Save Credentials", variable=self.save_credentials_var)
-        self.save_credentials_check.grid(row=4, column=1, sticky=tk.W)
+        self.save_credentials_check.grid(row=4, column=0, sticky=tk.W)
+
+        self.auto_deny_var = tk.BooleanVar()
+        self.auto_deny_check = ttk.Checkbutton(frame, text="Auto Deny Unverified", variable=self.auto_deny_var)
+        self.auto_deny_check.grid(row=4, column=1, sticky=tk.W)
 
         self.start_button = ttk.Button(frame, text="Start Monitoring", command=self.start_monitoring)
         self.start_button.grid(row=5, column=0, pady=10)
@@ -99,7 +103,7 @@ class VRChatMonitorApp:
         self.minimize_button.grid(row=6, column=0, pady=10)
 
         self.text_log = tk.Text(self.root, height=15, width=80)
-        self.text_log.grid(row=1, column=0, padx=10, pady=10)
+        self.text_log.grid(row=7, column=0, padx=10, pady=10)
 
     def log(self, message):
         self.root.after(0, lambda: self.text_log.insert(tk.END, message + "\n"))
@@ -122,7 +126,6 @@ class VRChatMonitorApp:
                 creds = json.loads(decrypted_data.decode("utf-8"))
                 self.username_entry.insert(0, creds.get("username", ""))
                 self.password_entry.insert(0, creds.get("password", ""))
-                # Set the group ID if it exists
                 group = creds.get("group", DEFAULT_GROUP_ID)
                 self.group_entry.delete(0, tk.END)
                 self.group_entry.insert(0, group)
@@ -261,6 +264,18 @@ class VRChatMonitorApp:
         except Exception as e:
             self.log(f"Exception while accepting join request for user {user_id}: {e}")
 
+    def deny_join_request(self, session, group_id, user_id):
+        url = f"{API_BASE_URL}/groups/{group_id}/requests/{user_id}"
+        payload = {"action": "deny"}
+        try:
+            response = session.put(url, json=payload)
+            if response.status_code in (200, 204):
+                self.log(f"Automatically denied join request for user {user_id}.")
+            else:
+                self.log(f"Failed to deny join request for user {user_id}. Status: {response.status_code}, Response: {response.text}")
+        except Exception as e:
+            self.log(f"Exception while denying join request for user {user_id}: {e}")
+
     def is_user_verified(self, user):
         return user.get("ageVerificationStatus") == "18+" and user.get("ageVerified") is True
 
@@ -300,7 +315,7 @@ class VRChatMonitorApp:
         self.log(f"Monitoring join requests for group {group_id} every {poll_interval} seconds...")
 
         while not self.stop_event.is_set():
-            self.log("----- Starting new monitoring cycle -----")
+            #self.log("----- Starting new monitoring cycle -----")
             join_requests = self.get_group_join_requests(session, group_id)
             if join_requests == "2FA_REQUIRED":
                 if not self.verify_two_factor_auth(session, self.username_entry.get(), self.password_entry.get()):
@@ -322,12 +337,17 @@ class VRChatMonitorApp:
                             self.log(f"User {display_name} ({user_id}) is 18+ verified. Accepting join request...")
                             self.accept_join_request(session, group_id, user_id)
                         else:
-                            self.log(f"User {display_name} ({user_id}) is NOT 18+ verified. Skipping join request.")
-                else:
-                    self.log("No join requests found at this time.")
+                            self.log(f"User {display_name} ({user_id}) is NOT 18+ verified.")
+                            if self.auto_deny_var.get():
+                                self.log("Auto Deny is enabled. Denying join request...")
+                                self.deny_join_request(session, group_id, user_id)
+                            else:
+                                self.log("Skipping join request (Auto Deny not enabled).")
+                #else:
+                    #self.log("No join requests found at this time.")
             else:
                 self.log("Error fetching join requests; will try again on next cycle.")
-            self.log("----- Monitoring cycle complete; sleeping -----")
+            #self.log("----- Monitoring cycle complete; sleeping -----")
             time.sleep(poll_interval)
         self.log("Monitoring stopped.")
 
