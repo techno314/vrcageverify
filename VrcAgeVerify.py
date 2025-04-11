@@ -137,7 +137,7 @@ class VRChatMonitorApp:
         creds = {
             "username": self.username_entry.get(),
             "password": self.password_entry.get(),
-            "group": self.group_entry.get()  # Save group ID as well.
+            "group": self.group_entry.get()
         }
         try:
             data = json.dumps(creds).encode("utf-8")
@@ -224,8 +224,11 @@ class VRChatMonitorApp:
             elif response.status_code == 401:
                 try:
                     error_json = response.json()
-                    if "Requires Two-Factor Authentication" in error_json.get("error", {}).get("message", ""):
+                    msg = error_json.get("error", {}).get("message", "")
+                    if "Requires Two-Factor Authentication" in msg:
                         return "2FA_REQUIRED"
+                    if "Missing Credentials" in msg:
+                        return "MISSING_CREDENTIALS"
                 except Exception:
                     pass
                 self.log(f"Failed to fetch join requests for group {group_id}. Status: {response.status_code}, Response: {response.text}")
@@ -266,7 +269,7 @@ class VRChatMonitorApp:
 
     def deny_join_request(self, session, group_id, user_id):
         url = f"{API_BASE_URL}/groups/{group_id}/requests/{user_id}"
-        payload = {"action": "deny"}
+        payload = {"action": "reject"}
         try:
             response = session.put(url, json=payload)
             if response.status_code in (200, 204):
@@ -284,6 +287,7 @@ class VRChatMonitorApp:
         session.headers.update({"User-Agent": USER_AGENT})
         self.load_session_cookies(session)
 
+        self.log("Performing auth check...")
         auth_check_url = f"{API_BASE_URL}/auth/user"
         try:
             auth_check_response = session.get(auth_check_url)
@@ -292,6 +296,7 @@ class VRChatMonitorApp:
             return
 
         if auth_check_response.status_code != 200:
+            self.log("Session cookies invalid. Attempting to authenticate...")
             username = self.username_entry.get()
             password = self.password_entry.get()
             if not self.authenticate(session, username, password):
@@ -302,9 +307,17 @@ class VRChatMonitorApp:
                 if not self.verify_two_factor_auth(session, username, password):
                     self.log("2FA failed.")
                     return
+                join_requests = self.get_group_join_requests(session, self.group_entry.get())
+            if join_requests == "MISSING_CREDENTIALS":
+                self.log("Missing Credentials detected. Reauthenticating...")
+                if not self.authenticate(session, username, password):
+                    self.log("Reauthentication failed.")
+                    return
+                self.save_session_cookies(session)
+                join_requests = self.get_group_join_requests(session, self.group_entry.get())
             self.save_session_cookies(session)
         else:
-            self.log("Loaded valid session cookies.")
+            self.log("Loaded valid session cookies (encrypted).")
 
         group_id = self.group_entry.get()
         try:
@@ -315,12 +328,18 @@ class VRChatMonitorApp:
         self.log(f"Monitoring join requests for group {group_id} every {poll_interval} seconds...")
 
         while not self.stop_event.is_set():
-            #self.log("----- Starting new monitoring cycle -----")
             join_requests = self.get_group_join_requests(session, group_id)
             if join_requests == "2FA_REQUIRED":
                 if not self.verify_two_factor_auth(session, self.username_entry.get(), self.password_entry.get()):
                     self.log("2FA failed. Exiting monitoring loop.")
                     break
+                join_requests = self.get_group_join_requests(session, group_id)
+            if join_requests == "MISSING_CREDENTIALS":
+                self.log("Missing Credentials detected during monitoring. Reauthenticating...")
+                if not self.authenticate(session, self.username_entry.get(), self.password_entry.get()):
+                    self.log("Reauthentication failed. Exiting monitoring loop.")
+                    break
+                self.save_session_cookies(session)
                 join_requests = self.get_group_join_requests(session, group_id)
             if join_requests is not None and isinstance(join_requests, list):
                 if join_requests:
@@ -343,11 +362,8 @@ class VRChatMonitorApp:
                                 self.deny_join_request(session, group_id, user_id)
                             else:
                                 self.log("Skipping join request (Auto Deny not enabled).")
-                #else:
-                    #self.log("No join requests found at this time.")
             else:
                 self.log("Error fetching join requests; will try again on next cycle.")
-            #self.log("----- Monitoring cycle complete; sleeping -----")
             time.sleep(poll_interval)
         self.log("Monitoring stopped.")
 
