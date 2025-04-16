@@ -147,6 +147,9 @@ class VRChatMonitorApp:
                 group = creds.get("group", DEFAULT_GROUP_ID)
                 self.group_entry.delete(0, tk.END)
                 self.group_entry.insert(0, group)
+                webhook = creds.get("webhook", "")
+                self.webhook_entry.delete(0, tk.END)
+                self.webhook_entry.insert(0, webhook)
                 self.log("Loaded saved credentials (encrypted).")
             except Exception as e:
                 self.log(f"Failed to load saved credentials: {e}")
@@ -155,14 +158,15 @@ class VRChatMonitorApp:
         creds = {
             "username": self.username_entry.get(),
             "password": self.password_entry.get(),
-            "group": self.group_entry.get()
+            "group": self.group_entry.get(),
+            "webhook": self.webhook_entry.get()
         }
         try:
             data = json.dumps(creds).encode("utf-8")
             encrypted_data = CIPHER.encrypt(data)
             with open(self.credentials_file, "wb") as f:
                 f.write(encrypted_data)
-            self.log("Credentials and group ID saved (encrypted).")
+            self.log("Credentials, group ID, and webhook URL saved (encrypted).")
         except Exception as e:
             self.log(f"Failed to save credentials: {e}")
 
