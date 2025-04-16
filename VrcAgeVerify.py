@@ -102,13 +102,31 @@ class VRChatMonitorApp:
         self.minimize_button = ttk.Button(frame, text="Minimize to Tray", command=self.minimize_to_tray)
         self.minimize_button.grid(row=6, column=0, pady=10)
 
+        # New Discord Webhook URL field
+        ttk.Label(frame, text="Discord Webhook URL:").grid(row=7, column=0, sticky=tk.W)
+        self.webhook_entry = ttk.Entry(frame, width=60)
+        self.webhook_entry.grid(row=7, column=1, sticky=tk.W)
+
         self.text_log = tk.Text(self.root, height=15, width=80)
-        self.text_log.grid(row=7, column=0, padx=10, pady=10)
+        self.text_log.grid(row=8, column=0, padx=10, pady=10, columnspan=2)
 
     def log(self, message):
         self.root.after(0, lambda: self.text_log.insert(tk.END, message + "\n"))
         self.root.after(0, lambda: self.text_log.see(tk.END))
         print(message)
+        # If a Discord webhook URL is provided, send the log message.
+        webhook_url = self.webhook_entry.get().strip()
+        if webhook_url:
+            threading.Thread(target=self.send_discord_log, args=(webhook_url, message), daemon=True).start()
+
+    def send_discord_log(self, webhook, message):
+        try:
+            payload = {"content": message}
+            response = requests.post(webhook, json=payload)
+            if response.status_code not in (200, 204):
+                self.root.after(0, lambda: self.text_log.insert(tk.END, f"Failed to send discord log: HTTP {response.status_code}\n"))
+        except Exception as e:
+            self.root.after(0, lambda: self.text_log.insert(tk.END, f"Exception sending discord log: {e}\n"))
 
     def log_to_file(self, message):
         try:
