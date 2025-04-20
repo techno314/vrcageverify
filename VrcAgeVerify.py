@@ -48,6 +48,7 @@ class VRChatMonitorApp:
         self.stop_event = threading.Event()
         self.monitor_thread = None
         self.tray_icon = None  # For pystray
+        self.webhook_lock = threading.Lock()  # Added for rate-limiting Discord webhook posts
         self.create_widgets()
         self.load_saved_credentials()
         icon_path = self.get_resource_path("vrchat_monitor_icon.ico")
@@ -114,19 +115,29 @@ class VRChatMonitorApp:
         self.root.after(0, lambda: self.text_log.insert(tk.END, message + "\n"))
         self.root.after(0, lambda: self.text_log.see(tk.END))
         print(message)
-        # If a Discord webhook URL is provided, send the log message.
-        webhook_url = self.webhook_entry.get().strip()
-        if webhook_url:
-            threading.Thread(target=self.send_discord_log, args=(webhook_url, message), daemon=True).start()
+        # Only send certain messages to Discord webhook.
+        allowed_keywords = [
+            "is 18+ verified. Accepting join request", 
+            "Successfully accepted join request", 
+            "is NOT 18+ verified",
+            "Stop signal sent",
+            "Monitoring join requests for group",
+        ]
+        if any(keyword in message for keyword in allowed_keywords):
+            webhook_url = self.webhook_entry.get().strip()
+            if webhook_url:
+                threading.Thread(target=self.send_discord_log, args=(webhook_url, message), daemon=True).start()
 
     def send_discord_log(self, webhook, message):
-        try:
-            payload = {"content": message}
-            response = requests.post(webhook, json=payload)
-            if response.status_code not in (200, 204):
-                self.root.after(0, lambda: self.text_log.insert(tk.END, f"Failed to send discord log: HTTP {response.status_code}\n"))
-        except Exception as e:
-            self.root.after(0, lambda: self.text_log.insert(tk.END, f"Exception sending discord log: {e}\n"))
+        with self.webhook_lock:
+            try:
+                payload = {"content": message}
+                response = requests.post(webhook, json=payload)
+                if response.status_code not in (200, 204):
+                    self.root.after(0, lambda: self.text_log.insert(tk.END, f"Failed to send discord log: HTTP {response.status_code}\n"))
+            except Exception as e:
+                self.root.after(0, lambda: self.text_log.insert(tk.END, f"Exception sending discord log: {e}\n"))
+            time.sleep(0.4)  # Wait 500ms between requests to avoid rate limiting
 
     def log_to_file(self, message):
         try:
