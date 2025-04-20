@@ -11,6 +11,7 @@ VrcAgeVerify is a Python application that monitors VRChat group join requests an
 - Provides a GUI for entering credentials, group ID, and polling interval.
 - Minimizes to the system tray.
 - Logs accepted requests with timestamps to `accepted_log.txt`.
+- Logs can be sent to a discord webhook.
 
 ## Requirements
 - Python 3.6+
