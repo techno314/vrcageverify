@@ -10,7 +10,7 @@ import sys
 import pystray
 from PIL import Image
 import datetime
-from cryptography.fernet import Fernet
+import keyring
 
 # Constants for the API and defaults.
 API_BASE_URL = "https://api.vrchat.cloud/api/1"
@@ -18,37 +18,19 @@ DEFAULT_GROUP_ID = "grp_7aa61881-550f-431e-a180-f99c77436124"
 DEFAULT_POLL_INTERVAL = 60
 USER_AGENT = "VRChatAutoJoinScript/1.0, contact: snoogle35@gmail.com"
 
-# File names for encrypted data.
+# File names (no longer used for encryption)
 CREDENTIALS_FILE = "saved_credentials.enc"
 SESSION_COOKIE_FILE = "vrchat_session.enc"
-KEY_FILE = "secret.key"
-
-def load_key():
-    """Load the encryption key from KEY_FILE or generate one if not found."""
-    if os.path.exists(KEY_FILE):
-        with open(KEY_FILE, "rb") as f:
-            return f.read()
-    else:
-        key = Fernet.generate_key()
-        with open(KEY_FILE, "wb") as f:
-            f.write(key)
-        return key
-
-# Load the encryption key and create the cipher.
-ENCRYPTION_KEY = load_key()
-CIPHER = Fernet(ENCRYPTION_KEY)
 
 class VRChatMonitorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("VRChat Auto Join Monitor")
-        self.credentials_file = CREDENTIALS_FILE
-        self.session_cookie_file = SESSION_COOKIE_FILE
         self.accepted_log_file = "accepted_log.txt"
         self.stop_event = threading.Event()
         self.monitor_thread = None
         self.tray_icon = None  # For pystray
-        self.webhook_lock = threading.Lock()  # Added for rate-limiting Discord webhook posts
+        self.webhook_lock = threading.Lock()  # Rate-limiting Discord webhook posts
         self.create_widgets()
         self.load_saved_credentials()
         icon_path = self.get_resource_path("vrchat_monitor_icon.ico")
@@ -110,11 +92,16 @@ class VRChatMonitorApp:
 
         self.text_log = tk.Text(self.root, height=15, width=80)
         self.text_log.grid(row=8, column=0, padx=10, pady=10, columnspan=2)
+        # Configure a tag to style log messages with a timestamp
+        self.text_log.tag_configure("timestamp", foreground="green", font=("Helvetica", 10, "bold"))
 
     def log(self, message):
-        self.root.after(0, lambda: self.text_log.insert(tk.END, message + "\n"))
+        # Prepend a timestamp to the log message
+        timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        full_message = f"{timestamp} {message}\n"
+        self.root.after(0, lambda: self.text_log.insert(tk.END, full_message, "timestamp"))
         self.root.after(0, lambda: self.text_log.see(tk.END))
-        print(message)
+        print(full_message.strip())
         # Only send certain messages to Discord webhook.
         allowed_keywords = [
             "is 18+ verified. Accepting join request", 
@@ -131,13 +118,17 @@ class VRChatMonitorApp:
     def send_discord_log(self, webhook, message):
         with self.webhook_lock:
             try:
-                payload = {"content": message}
+                # Create a Discord-formatted timestamp (e.g., <t:1682160000:F>)
+                timestamp = f"<t:{int(time.time())}:F>"
+                # Bold the timestamp and wrap the log message in inline code formatting
+                formatted_message = f"**[{timestamp}]**\n```diff\n+ {message}\n```"
+                payload = {"content": formatted_message}
                 response = requests.post(webhook, json=payload)
                 if response.status_code not in (200, 204):
                     self.root.after(0, lambda: self.text_log.insert(tk.END, f"Failed to send discord log: HTTP {response.status_code}\n"))
             except Exception as e:
                 self.root.after(0, lambda: self.text_log.insert(tk.END, f"Exception sending discord log: {e}\n"))
-            time.sleep(0.4)  # Wait 500ms between requests to avoid rate limiting
+            time.sleep(0.4)  # Wait to avoid rate limiting
 
     def log_to_file(self, message):
         try:
@@ -147,12 +138,10 @@ class VRChatMonitorApp:
             self.log(f"Error writing to log file: {e}")
 
     def load_saved_credentials(self):
-        if os.path.exists(self.credentials_file):
+        creds_str = keyring.get_password("vrcageverify_credentials", "credentials")
+        if creds_str is not None:
             try:
-                with open(self.credentials_file, "rb") as f:
-                    encrypted_data = f.read()
-                decrypted_data = CIPHER.decrypt(encrypted_data)
-                creds = json.loads(decrypted_data.decode("utf-8"))
+                creds = json.loads(creds_str)
                 self.username_entry.insert(0, creds.get("username", ""))
                 self.password_entry.insert(0, creds.get("password", ""))
                 group = creds.get("group", DEFAULT_GROUP_ID)
@@ -161,7 +150,7 @@ class VRChatMonitorApp:
                 webhook = creds.get("webhook", "")
                 self.webhook_entry.delete(0, tk.END)
                 self.webhook_entry.insert(0, webhook)
-                self.log("Loaded saved credentials (encrypted).")
+                self.log("Loaded saved credentials from keyring.")
             except Exception as e:
                 self.log(f"Failed to load saved credentials: {e}")
 
@@ -173,34 +162,26 @@ class VRChatMonitorApp:
             "webhook": self.webhook_entry.get()
         }
         try:
-            data = json.dumps(creds).encode("utf-8")
-            encrypted_data = CIPHER.encrypt(data)
-            with open(self.credentials_file, "wb") as f:
-                f.write(encrypted_data)
-            self.log("Credentials, group ID, and webhook URL saved (encrypted).")
+            keyring.set_password("vrcageverify_credentials", "credentials", json.dumps(creds))
+            self.log("Credentials, group ID, and webhook URL saved to keyring.")
         except Exception as e:
             self.log(f"Failed to save credentials: {e}")
 
     def load_session_cookies(self, session):
-        if os.path.exists(self.session_cookie_file):
+        cookies_str = keyring.get_password("vrcageverify_session", "session")
+        if cookies_str is not None:
             try:
-                with open(self.session_cookie_file, "rb") as f:
-                    encrypted_data = f.read()
-                decrypted_data = CIPHER.decrypt(encrypted_data)
-                cookies_dict = json.loads(decrypted_data.decode("utf-8"))
+                cookies_dict = json.loads(cookies_str)
                 session.cookies.update(cookies_dict)
-                self.log("Session cookies loaded (encrypted).")
+                self.log("Session cookies loaded from keyring.")
             except Exception as e:
                 self.log(f"Failed to load session cookies: {e}")
 
     def save_session_cookies(self, session):
         cookies_dict = session.cookies.get_dict()
         try:
-            data = json.dumps(cookies_dict).encode("utf-8")
-            encrypted_data = CIPHER.encrypt(data)
-            with open(self.session_cookie_file, "wb") as f:
-                f.write(encrypted_data)
-            self.log("Session cookies saved (encrypted).")
+            keyring.set_password("vrcageverify_session", "session", json.dumps(cookies_dict))
+            self.log("Session cookies saved to keyring.")
         except Exception as e:
             self.log(f"Failed to save session cookies: {e}")
 
@@ -350,7 +331,7 @@ class VRChatMonitorApp:
                 join_requests = self.get_group_join_requests(session, self.group_entry.get())
             self.save_session_cookies(session)
         else:
-            self.log("Loaded valid session cookies (encrypted).")
+            self.log("Loaded valid session cookies from keyring.")
 
         group_id = self.group_entry.get()
         try:
