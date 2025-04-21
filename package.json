@@ -12,6 +12,6 @@
     "requests": "^2.25.1",
     "pystray": "^0.17.3",
     "Pillow": "^8.2.0",
-    "cryptography": "^3.4.7"
+    "keyring": "^23.13.1"
   }
 }
