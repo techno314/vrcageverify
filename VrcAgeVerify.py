@@ -14,9 +14,9 @@ import keyring
 
 # Constants for the API and defaults.
 API_BASE_URL = "https://api.vrchat.cloud/api/1"
-DEFAULT_GROUP_ID = "grp_7aa61881-550f-431e-a180-f99c77436124"
+DEFAULT_GROUP_ID = "Change-Me"
 DEFAULT_POLL_INTERVAL = 60
-USER_AGENT = "VRChatAutoJoinScript/1.0, contact: snoogle35@gmail.com"
+USER_AGENT = "VRChatAutoJoinScript/1.0"
 
 # File names (no longer used for encryption)
 CREDENTIALS_FILE = "saved_credentials.enc"
