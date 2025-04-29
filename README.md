@@ -42,5 +42,5 @@ pyinstaller --onefile --windowed --icon=vrchat_monitor_icon.ico --add-data "vrch
 
 ## Notes
 - The GUI log displays each message prepended with a green, bold timestamp.
-- Certain log messages (such as accepted join requests or 2FA statuses) are formatted and sent to a Discord webhook.
+- Certain log messages (such as accepted join requests or 2FA statuses) are formatted and sent to a Discord webhook (Of your choosing).
 - Credentials and session cookies are stored securely using Keyring.
