@@ -109,6 +109,7 @@ class VRChatMonitorApp:
             "is NOT 18+ verified",
             "Stop signal sent",
             "Monitoring join requests for group",
+            "cannot join:",
         ]
         if any(keyword in message for keyword in allowed_keywords):
             webhook_url = self.webhook_entry.get().strip()
@@ -276,6 +277,18 @@ class VRChatMonitorApp:
                 self.log(f"Successfully accepted join request for user {user_id}.")
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.log_to_file(f"{timestamp}: Accepted join request for user {user_id}.")
+            elif response.status_code == 403:
+                # Check for the specific error message about too many groups
+                try:
+                    error_json = response.json()
+                    error_msg = error_json.get("error", {}).get("message", "")
+                    if "too many groups" in error_msg:
+                        self.log(f"User {user_id} cannot join: {error_msg} Auto-denying request.")
+                        self.deny_join_request(session, group_id, user_id)
+                        return
+                except Exception as e:
+                    self.log(f"Error parsing 403 response for user {user_id}: {e}")
+                self.log(f"Failed to accept join request for user {user_id}. Status: {response.status_code}, Response: {response.text}")
             else:
                 self.log(f"Failed to accept join request for user {user_id}. Status: {response.status_code}, Response: {response.text}")
         except Exception as e:
