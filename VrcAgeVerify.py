@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog, PhotoImage
+from tkinter import ttk, simpledialog
+from tkinter.scrolledtext import ScrolledText
 import threading
 import requests
 import time
@@ -16,7 +17,7 @@ import keyring
 API_BASE_URL = "https://api.vrchat.cloud/api/1"
 DEFAULT_GROUP_ID = "Change-Me"
 DEFAULT_POLL_INTERVAL = 60
-USER_AGENT = "VRChatAutoJoinScript/1.0"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 
 # File names (no longer used for encryption)
 CREDENTIALS_FILE = "saved_credentials.enc"
@@ -31,13 +32,20 @@ class VRChatMonitorApp:
         self.monitor_thread = None
         self.tray_icon = None  # For pystray
         self.webhook_lock = threading.Lock()  # Rate-limiting Discord webhook posts
+        
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": USER_AGENT})
+
         self.create_widgets()
         self.load_saved_credentials()
         icon_path = self.get_resource_path("vrchat_monitor_icon.ico")
-        try:
-            self.root.iconbitmap(icon_path)
-        except Exception as e:
-            self.log(f"Error setting window icon: {e}")
+        if os.path.exists(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+            except Exception as e:
+                self.log(f"Error setting window icon: {e}")
+        else:
+            self.log("Icon file not found, skipping icon setting.")
 
     def get_resource_path(self, relative_path):
         """Get absolute path to resource, works for dev and for PyInstaller."""
@@ -90,10 +98,15 @@ class VRChatMonitorApp:
         self.webhook_entry = ttk.Entry(frame, width=60)
         self.webhook_entry.grid(row=7, column=1, sticky=tk.W)
 
-        self.text_log = tk.Text(self.root, height=15, width=80)
+        self.text_log = ScrolledText(self.root, height=15, width=80)
         self.text_log.grid(row=8, column=0, padx=10, pady=10, columnspan=2)
         # Configure a tag to style log messages with a timestamp
         self.text_log.tag_configure("timestamp", foreground="green", font=("Helvetica", 10, "bold"))
+
+        self.last_fetch_text_var = tk.StringVar()
+        ttk.Label(frame, text="Most Recent Successful Fetch:").grid(row=9, column=0, sticky=tk.W)
+        ttk.Label(frame, textvariable=self.last_fetch_text_var, wraplength=600, justify=tk.LEFT).grid(row=10, column=0, columnspan=2, sticky=tk.W)
+        
 
     def log(self, message):
         # Prepend a timestamp to the log message
@@ -130,6 +143,11 @@ class VRChatMonitorApp:
             except Exception as e:
                 self.root.after(0, lambda: self.text_log.insert(tk.END, f"Exception sending discord log: {e}\n"))
             time.sleep(0.4)  # Wait to avoid rate limiting
+
+    def update_last_fetch_log(self, message):
+        timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        full_message = f"{timestamp} {message}"
+        self.root.after(0, lambda: self.last_fetch_text_var.set(full_message))
 
     def log_to_file(self, message):
         try:
@@ -191,8 +209,16 @@ class VRChatMonitorApp:
         try:
             response = session.get(url, auth=(username, password))
             if response.status_code == 200:
-                self.log(f"Successfully authenticated as {username}.")
-                return True
+                data = response.json()
+                if data.get("requiresTwoFactorAuth"):
+                    self.log("Authentication successful, but 2FA is required.")
+                    return "2FA_REQUIRED"
+                elif data.get("id"):  # A successful login returns the user object with an id.
+                    self.log(f"Successfully authenticated as {username}.")
+                    return True
+                else:
+                    self.log(f"Authentication check returned unexpected response: {response.text}")
+                    return False
             else:
                 self.log(f"Authentication failed. Status: {response.status_code}, Response: {response.text}")
                 return False
@@ -219,8 +245,9 @@ class VRChatMonitorApp:
         url = f"{API_BASE_URL}/auth/twofactorauth/totp/verify"
         payload = {"code": code}
         try:
-            response = session.post(url, json=payload, auth=(username, password))
-            if response.status_code == 200:
+            time.sleep(5)  # Add a longer delay to avoid rate limiting
+            response = session.post(url, json=payload)
+            if response.status_code == 200 and response.json().get("verified") is True:
                 self.log("Two-factor authentication successful.")
                 return True
             else:
@@ -309,89 +336,89 @@ class VRChatMonitorApp:
     def is_user_verified(self, user):
         return user.get("ageVerificationStatus") == "18+" and user.get("ageVerified") is True
 
-    def monitor_loop(self):
-        session = requests.Session()
-        session.headers.update({"User-Agent": USER_AGENT})
-        self.load_session_cookies(session)
+    def do_reauth(self):
+        """Performs the full re-authentication flow."""
+        self.log("Attempting to re-authenticate...")
+        self.session.cookies.clear()
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+        auth_status = self.authenticate(self.session, username, password)
+        if auth_status is True:
+            self.log("Re-authentication successful (no 2FA needed).")
+            self.save_session_cookies(self.session)
+            return True
+        if auth_status == "2FA_REQUIRED":
+            self.log("2FA is required to complete authentication.")
+            if self.verify_two_factor_auth(self.session, username, password):
+                self.log("Re-authentication successful (with 2FA).")
+                self.save_session_cookies(self.session)
+                return True
+            else:
+                self.log("2FA verification failed.")
+                return False
+        self.log("Re-authentication with user/pass failed.")
+        return False
 
-        self.log("Performing auth check...")
+    def monitor_loop(self):
+        self.load_session_cookies(self.session)
+        # Perform an initial check to see if we're logged in or need to re-auth.
         auth_check_url = f"{API_BASE_URL}/auth/user"
         try:
-            auth_check_response = session.get(auth_check_url)
+            response = self.session.get(auth_check_url)
+            if response.status_code != 200:
+                self.log("Initial session check failed. Attempting full re-authentication.")
+                if not self.do_reauth():
+                    self.log("Initial authentication failed. Stopping monitor.")
+                    self.stop_monitoring()
+                    return
         except Exception as e:
-            self.log(f"Error during auth check: {e}")
-            return
-
-        if auth_check_response.status_code != 200:
-            self.log("Session cookies invalid. Attempting to authenticate...")
-            username = self.username_entry.get()
-            password = self.password_entry.get()
-            if not self.authenticate(session, username, password):
-                self.log("Authentication failed.")
+            self.log(f"Initial session check threw an exception: {e}. Attempting re-auth.")
+            if not self.do_reauth():
+                self.log("Initial authentication failed. Stopping monitor.")
+                self.stop_monitoring()
                 return
-            join_requests = self.get_group_join_requests(session, self.group_entry.get())
-            if join_requests == "2FA_REQUIRED":
-                if not self.verify_two_factor_auth(session, username, password):
-                    self.log("2FA failed.")
-                    return
-                join_requests = self.get_group_join_requests(session, self.group_entry.get())
-            if join_requests == "MISSING_CREDENTIALS":
-                self.log("Missing Credentials detected. Reauthenticating...")
-                if not self.authenticate(session, username, password):
-                    self.log("Reauthentication failed.")
-                    return
-                self.save_session_cookies(session)
-                join_requests = self.get_group_join_requests(session, self.group_entry.get())
-            self.save_session_cookies(session)
-        else:
-            self.log("Loaded valid session cookies from keyring.")
 
         group_id = self.group_entry.get()
         try:
             poll_interval = int(self.interval_entry.get())
-        except:
+        except (ValueError, TypeError):
             poll_interval = DEFAULT_POLL_INTERVAL
-
         self.log(f"Monitoring join requests for group {group_id} every {poll_interval} seconds...")
-
         while not self.stop_event.is_set():
-            join_requests = self.get_group_join_requests(session, group_id)
-            if join_requests == "2FA_REQUIRED":
-                if not self.verify_two_factor_auth(session, self.username_entry.get(), self.password_entry.get()):
-                    self.log("2FA failed. Exiting monitoring loop.")
+            join_requests = self.get_group_join_requests(self.session, group_id)
+            if join_requests in ["2FA_REQUIRED", "MISSING_CREDENTIALS"]:
+                self.log("Session issue detected, attempting re-authentication.")
+                if not self.do_reauth():
+                    self.log("Re-authentication failed. Exiting monitoring loop.")
                     break
-                join_requests = self.get_group_join_requests(session, group_id)
-            if join_requests == "MISSING_CREDENTIALS":
-                self.log("Missing Credentials detected during monitoring. Reauthenticating...")
-                if not self.authenticate(session, self.username_entry.get(), self.password_entry.get()):
-                    self.log("Reauthentication failed. Exiting monitoring loop.")
-                    break
-                self.save_session_cookies(session)
-                join_requests = self.get_group_join_requests(session, group_id)
-            if join_requests is not None and isinstance(join_requests, list):
+                join_requests = self.get_group_join_requests(self.session, group_id)
+            if isinstance(join_requests, list):
+                self.update_last_fetch_log(json.dumps(join_requests, indent=2))
                 if join_requests:
                     self.log(f"Found {len(join_requests)} join request(s).")
                     for req in join_requests:
                         partial_user = req.get("user", {})
                         user_id = partial_user.get("id", "Unknown")
                         display_name = partial_user.get("displayName", "Unknown")
-                        full_user = self.fetch_user_profile(session, user_id)
+                        full_user = self.fetch_user_profile(self.session, user_id)
                         if not full_user:
                             self.log(f"Could not fetch full profile for user {display_name} ({user_id}). Skipping.")
                             continue
                         if self.is_user_verified(full_user):
                             self.log(f"User {display_name} ({user_id}) is 18+ verified. Accepting join request...")
-                            self.accept_join_request(session, group_id, user_id)
+                            self.accept_join_request(self.session, group_id, user_id)
                         else:
                             self.log(f"User {display_name} ({user_id}) is NOT 18+ verified.")
                             if self.auto_deny_var.get():
                                 self.log("Auto Deny is enabled. Denying join request...")
-                                self.deny_join_request(session, group_id, user_id)
+                                self.deny_join_request(self.session, group_id, user_id)
                             else:
                                 self.log("Skipping join request (Auto Deny not enabled).")
             else:
-                self.log("Error fetching join requests; will try again on next cycle.")
-            time.sleep(poll_interval)
+                self.log("Could not fetch join requests; will try again on next cycle.")
+
+            self.stop_event.wait(poll_interval)
+
         self.log("Monitoring stopped.")
 
     def start_monitoring(self):
@@ -439,3 +466,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VRChatMonitorApp(root)
     root.mainloop()
+
